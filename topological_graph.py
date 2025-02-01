@@ -1,19 +1,28 @@
 import numpy as np
 import cv2
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Set
 
-@dataclass
+@dataclass(frozen=True)
 class Node:
     x: int
     y: int
     type: str  # 'junction', 'endpoint', or 'turn'
     
+    def __eq__(self, other):
+        if not isinstance(other, Node):
+            return False
+        return self.x == other.x and self.y == other.y and self.type == other.type
+        
+    def __hash__(self):
+        return hash((self.x, self.y, self.type))
+
 @dataclass
 class Edge:
     start_node: Node
     end_node: Node
     pixels: List[Tuple[int, int]]  # List of pixel coordinates along the edge
+
 
 def build_topological_graph(skeleton: np.ndarray):
     """Convert skeleton to topological graph"""
@@ -94,42 +103,234 @@ def get_next_pixel(skeleton: np.ndarray, current: Tuple[int, int], visited: np.n
                 return (ny, nx)
     return None
 
+
 def trace_skeleton_paths(skeleton: np.ndarray, nodes: List[Node]) -> List[Edge]:
+
     """Trace paths between nodes along skeleton"""
     edges = []
-    visited = np.zeros_like(skeleton, dtype=bool)
+    h, w = skeleton.shape
     node_positions = {(node.y, node.x): node for node in nodes}
+    visited = np.zeros_like(skeleton, dtype=bool)
     
-    # Mark nodes as visited
-    for node in nodes:
-        visited[node.y, node.x] = True
-    
-    # Start from each node
+    def get_neighbors(y: int, x: int, local_visited: np.ndarray) -> List[Tuple[int, int]]:
+        """Get unvisited neighboring skeleton pixels"""
+        neighbors = []
+        # Try orthogonal directions first, then diagonals
+        for dy, dx in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (-1,1), (-1,-1), (1,-1)]:
+            ny, nx = y + dy, x + dx
+            if (0 <= ny < h and 0 <= nx < w and 
+                skeleton[ny, nx] > 0 and 
+                not local_visited[ny, nx]):
+                neighbors.append((ny, nx))
+        return neighbors
+
+    # First pass: standard path tracing
     for start_node in nodes:
-        start_pos = (start_node.y, start_node.x)
-        
-        # Find unvisited neighbors of the start node
-        next_pixel = get_next_pixel(skeleton, start_pos, visited)
-        while next_pixel is not None:
-            path = [start_pos]
-            current = next_pixel
+        local_visited = visited.copy()
+        # Don't mark nodes as visited initially
+        for node in nodes:
+            local_visited[node.y, node.x] = False
             
-            # Trace path until we hit another node or dead end
-            while current is not None:
-                path.append(current)
-                visited[current] = True
+        neighbors = get_neighbors(start_node.y, start_node.x, local_visited)
+        
+        for ny, nx in neighbors:
+            if local_visited[ny, nx]:
+                continue
                 
-                if current in node_positions:
-                    # Found path to another node
-                    end_node = node_positions[current]
-                    # Convert (y,x) coordinates to (x,y) for Edge pixels
-                    pixel_path = [(x, y) for y, x in path]
-                    edges.append(Edge(start_node, end_node, pixel_path))
+            path = [(start_node.x, start_node.y)]
+            curr_y, curr_x = ny, nx
+            
+            while True:
+                path.append((curr_x, curr_y))
+                local_visited[curr_y, curr_x] = True
+                
+                if (curr_y, curr_x) in node_positions:
+                    end_node = node_positions[(curr_y, curr_x)]
+                    if end_node != start_node:
+                        edges.append(Edge(start_node, end_node, path))
+                        local_visited[curr_y, curr_x] = False
                     break
                 
-                current = get_next_pixel(skeleton, current, visited)
+                next_pixels = get_neighbors(curr_y, curr_x, local_visited)
+                if not next_pixels:
+                    break
+                curr_y, curr_x = next_pixels[0]
+
+    # Create a map of pixels that haven't been included in any edge
+    edge_pixels = np.zeros_like(skeleton, dtype=bool)
+    for edge in edges:
+        for x, y in edge.pixels:
+            edge_pixels[y, x] = True
             
-            # Look for other paths from the start node
-            next_pixel = get_next_pixel(skeleton, start_pos, visited)
+    # Find remaining skeleton pixels that haven't been used
+    unvisited_skeleton = np.logical_and(skeleton > 0, np.logical_not(edge_pixels))
     
-    return edges
+    # Second pass: try all nodes again with focus on unvisited skeleton pixels
+    for start_node in nodes:
+        local_visited = np.zeros_like(skeleton, dtype=bool)
+        for dy, dx in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (-1,1), (-1,-1), (1,-1)]:
+            ny, nx = start_node.y + dy, start_node.x + dx
+            
+            # Only start paths in directions of unvisited skeleton pixels
+            if (0 <= ny < h and 0 <= nx < w and 
+                skeleton[ny, nx] > 0 and 
+                unvisited_skeleton[ny, nx]):
+                
+                path = [(start_node.x, start_node.y)]
+                curr_y, curr_x = ny, nx
+                path_visited = local_visited.copy()
+                
+                while True:
+                    path.append((curr_x, curr_y))
+                    path_visited[curr_y, curr_x] = True
+                    
+                    if (curr_y, curr_x) in node_positions:
+                        end_node = node_positions[(curr_y, curr_x)]
+                        if end_node != start_node:
+                            edges.append(Edge(start_node, end_node, path))
+                            # Mark these pixels as visited in the main map
+                            for x, y in path:
+                                edge_pixels[y, x] = True
+                        break
+                    
+                    next_pixels = get_neighbors(curr_y, curr_x, path_visited)
+                    if not next_pixels:
+                        break
+                    curr_y, curr_x = next_pixels[0]
+                    
+                local_visited |= path_visited
+
+    # Remove duplicate edges
+    unique_edges = []
+    seen_pairs = set()
+    for edge in edges:
+        pair = tuple(sorted([(edge.start_node.x, edge.start_node.y), 
+                           (edge.end_node.x, edge.end_node.y)]))
+        if pair not in seen_pairs:
+            seen_pairs.add(pair)
+            unique_edges.append(edge)
+    
+    return unique_edges
+
+#trace a line to link nodes that are supposed to be linked but are not
+""" def trace_skeleton_paths(skeleton: np.ndarray, nodes: List[Node]) -> List[Edge]:
+    #Trace paths between nodes along skeleton
+    edges = []
+    h, w = skeleton.shape
+    node_positions = {(node.y, node.x): node for node in nodes}
+    visited = np.zeros_like(skeleton, dtype=bool)
+    
+    def get_neighbors(y: int, x: int, local_visited: np.ndarray) -> List[Tuple[int, int]]:
+        #Get unvisited neighboring skeleton pixels
+        neighbors = []
+        # Check in all 8 directions, prioritizing direct neighbors
+        for dy, dx in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (-1,1), (-1,-1), (1,-1)]:
+            ny, nx = y + dy, x + dx
+            if (0 <= ny < h and 0 <= nx < w and 
+                skeleton[ny, nx] > 0 and 
+                not local_visited[ny, nx]):
+                neighbors.append((ny, nx))
+        return neighbors
+
+    def find_closest_node(y: int, x: int, exclude_node: Node = None) -> Optional[Node]:
+        #Find the closest node to the given point using BFS
+        if (y, x) in node_positions:
+            return node_positions[(y, x)]
+            
+        queue = [(y, x)]
+        bfs_visited = set([(y, x)])
+        
+        while queue:
+            cy, cx = queue.pop(0)
+            
+            # Check neighbors
+            for dy, dx in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (-1,1), (-1,-1), (1,-1)]:
+                ny, nx = cy + dy, cx + dx
+                if (0 <= ny < h and 0 <= nx < w and 
+                    skeleton[ny, nx] > 0 and 
+                    (ny, nx) not in bfs_visited):
+                    
+                    if (ny, nx) in node_positions:
+                        node = node_positions[(ny, nx)]
+                        if node != exclude_node:
+                            return node
+                            
+                    queue.append((ny, nx))
+                    bfs_visited.add((ny, nx))
+        return None
+
+    # First pass: standard path tracing
+    for start_node in nodes:
+        local_visited = visited.copy()
+        neighbors = get_neighbors(start_node.y, start_node.x, local_visited)
+        
+        for ny, nx in neighbors:
+            if local_visited[ny, nx]:
+                continue
+                
+            path = [(start_node.x, start_node.y)]
+            curr_y, curr_x = ny, nx
+            
+            while True:
+                path.append((curr_x, curr_y))
+                local_visited[curr_y, curr_x] = True
+                
+                if (curr_y, curr_x) in node_positions:
+                    end_node = node_positions[(curr_y, curr_x)]
+                    if end_node != start_node:
+                        edges.append(Edge(start_node, end_node, path))
+                        local_visited[curr_y, curr_x] = False
+                    break
+                
+                next_pixels = get_neighbors(curr_y, curr_x, local_visited)
+                if not next_pixels:
+                    break
+                curr_y, curr_x = next_pixels[0]
+
+    # Create a map of visited pixels from existing edges
+    edge_pixels = np.zeros_like(skeleton, dtype=bool)
+    for edge in edges:
+        for x, y in edge.pixels:
+            edge_pixels[y, x] = True
+
+    # Final pass: look for unvisited skeleton pixels
+    for y in range(h):
+        for x in range(w):
+            if skeleton[y, x] > 0 and not edge_pixels[y, x]:
+                # Found an unvisited skeleton pixel
+                start_node = find_closest_node(y, x)
+                if start_node:
+                    end_node = find_closest_node(y, x, start_node)
+                    if end_node:
+                        # Trace path between the two closest nodes
+                        local_visited = np.zeros_like(skeleton, dtype=bool)
+                        path = [(start_node.x, start_node.y)]
+                        curr_y, curr_x = y, x
+                        
+                        while True:
+                            path.append((curr_x, curr_y))
+                            local_visited[curr_y, curr_x] = True
+                            
+                            if (curr_y, curr_x) in node_positions:
+                                if node_positions[(curr_y, curr_x)] == end_node:
+                                    edges.append(Edge(start_node, end_node, path))
+                                break
+                            
+                            next_pixels = get_neighbors(curr_y, curr_x, local_visited)
+                            if not next_pixels:
+                                break
+                            curr_y, curr_x = next_pixels[0]
+
+    # Remove duplicate edges
+    unique_edges = []
+    seen_pairs = set()
+    for edge in edges:
+        pair = tuple(sorted([(edge.start_node.x, edge.start_node.y), 
+                           (edge.end_node.x, edge.end_node.y)]))
+        if pair not in seen_pairs:
+            seen_pairs.add(pair)
+            unique_edges.append(edge)
+    
+    return unique_edges
+"""
+    
