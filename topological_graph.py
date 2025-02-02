@@ -17,12 +17,25 @@ class Node:
     def __hash__(self):
         return hash((self.x, self.y, self.type))
 
-@dataclass
+@dataclass(frozen=True)
 class Edge:
     start_node: Node
     end_node: Node
-    pixels: List[Tuple[int, int]]  # List of pixel coordinates along the edge
-
+    pixels: Tuple[Tuple[int, int], ...]  # Tuple of pixel coordinates for hashability
+    
+    def __post_init__(self):
+        # Convert pixels list to tuple for hashability
+        object.__setattr__(self, 'pixels', tuple(self.pixels))
+    
+    def __hash__(self):
+        return hash((self.start_node, self.end_node, self.pixels))
+        
+    def __eq__(self, other):
+        if not isinstance(other, Edge):
+            return False
+        return (self.start_node == other.start_node and 
+                self.end_node == other.end_node and 
+                self.pixels == other.pixels)
 
 def build_topological_graph(skeleton: np.ndarray):
     """Convert skeleton to topological graph"""
@@ -59,7 +72,7 @@ def find_critical_points(skeleton: np.ndarray) -> List[Node]:
                     potential_points.append((x, y, 'junction'))
     
     # Group close points
-    min_distance = 15  # Minimum distance between points
+    min_distance = 30  # Minimum distance between points
     grouped_points = []
     used = set()
     
