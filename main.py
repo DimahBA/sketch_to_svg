@@ -1,19 +1,10 @@
 import cv2
 import numpy as np
-import math
 import argparse
 from pathlib import Path
 from extract_skeleton import extract_skeleton
 from topological_graph import build_topological_graph, Node, Edge
-from hyper_graph import Hypergraph
-
-def evaluate_bezier(control_points: np.ndarray, degree: int, t: float) -> np.ndarray:
-    """Evaluate a Bézier curve at parameter t using De Casteljau's algorithm."""
-    points = control_points.copy()
-    for r in range(degree):
-        for i in range(degree - r):
-            points[i] = (1 - t) * points[i] + t * points[i + 1]
-    return points[0]
+from bezier_fitting import fit_bezier_curves
 
 def generate_distinct_colors(n):
     """Generate n visually distinct colors using HSV color space."""
@@ -46,17 +37,31 @@ def generate_distinct_colors(n):
         
     return colors
 
-def draw_topological_graph(skeleton, nodes, edges):
-    """Draw the topological graph with nodes and edges"""
+def draw_topological_graph(skeleton, nodes, edges, straight_lines=False):
+    """Draw the topological graph with nodes and edges
+    
+    Args:
+        skeleton: Input skeleton image
+        nodes: List of Node objects
+        edges: List of Edge objects
+        straight_lines: If True, draw straight lines between connected nodes instead of pixel paths
+    """
     viz = cv2.cvtColor(skeleton, cv2.COLOR_GRAY2BGR) if len(skeleton.shape) == 2 else skeleton.copy()
     
     # Draw edges
     for edge in edges:
-        # Draw the pixel path in blue
-        for i in range(len(edge.pixels) - 1):
-            pt1 = edge.pixels[i]
-            pt2 = edge.pixels[i + 1]
-            cv2.line(viz, pt1, pt2, (255, 0, 0), 1)
+        if straight_lines:
+            # Draw straight green line between start and end nodes
+            cv2.line(viz, 
+                    (edge.start_node.x, edge.start_node.y),
+                    (edge.end_node.x, edge.end_node.y),
+                    (0, 255, 0), 1, cv2.LINE_AA)
+        else:
+            # Draw the pixel path in blue
+            for i in range(len(edge.pixels) - 1):
+                pt1 = edge.pixels[i]
+                pt2 = edge.pixels[i + 1]
+                cv2.line(viz, pt1, pt2, (255, 0, 0), 1)
     
     # Draw nodes
     for node in nodes:
@@ -73,72 +78,91 @@ def draw_topological_graph(skeleton, nodes, edges):
     
     return viz
 
-def draw_hypergraph(image, hypergraph, show_control_points=False):
-    """Draw hypergraph with each hyperedge in a different color"""
+
+def evaluate_bezier(control_points: np.ndarray, t: float) -> np.ndarray:
+    """Evaluate a cubic Bézier curve at parameter t using de Casteljau's algorithm.
+    
+    De Casteljau's algorithm provides a numerically stable way to evaluate Bézier curves
+    by repeatedly interpolating between control points.
+    
+    Args:
+        control_points: Array of 4 control points defining the cubic Bézier curve
+        t: Parameter value between 0 and 1
+        
+    Returns:
+        Point on the curve at parameter t
+    """
+    # Start with the control points
+    points = control_points.copy()
+    
+    # Since we're working with cubic curves, we always do 3 iterations
+    for _ in range(3):
+        # In each iteration, create new points by interpolating between pairs
+        for i in range(len(points) - 1):
+            points[i] = (1 - t) * points[i] + t * points[i + 1]
+    
+    return points[0]
+
+def draw_bezier_curves(image, curves, show_control_points=False):
+    """Draw fitted cubic Bézier curves with each curve in a different color.
+    
+    This function visualizes cubic Bézier curves by sampling points along each curve
+    and drawing them with anti-aliased lines. Each curve gets a unique color for
+    clear visualization. Optionally shows control points and their connecting
+    polygon to help understand how the curve is shaped.
+    
+    Args:
+        image: Input image to draw on
+        curves: List of BezierCurve objects (each having 4 control points)
+        show_control_points: If True, draw control points and control polygon
+        
+    Returns:
+        Visualization image with drawn curves
+    """
+    # Convert grayscale to color if needed
     viz = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if len(image.shape) == 2 else image.copy()
     
-    # Generate distinct colors for each hyperedge
-    colors = generate_distinct_colors(len(hypergraph.hyperedges))
+    # Generate visually distinct colors for each curve
+    colors = generate_distinct_colors(len(curves))
     
-    # Draw each hyperedge
-    for hedge, color in zip(hypergraph.hyperedges, colors):
-        # Draw the Bézier curve
-        if hedge.bezier_curve is not None:
-            # Sample points along the curve
-            t_values = np.linspace(0, 1, 100)
-            points = np.array([evaluate_bezier(hedge.bezier_curve.control_points, 
-                                            hedge.bezier_curve.degree, t) 
-                             for t in t_values])
-            points = points.astype(np.int32)
+    # Draw each Bézier curve
+    for curve, color in zip(curves, colors):
+        # Sample 100 points along the curve for smooth rendering
+        t_values = np.linspace(0, 1, 100)
+        # Note: We don't need the degree parameter anymore since all curves are cubic
+        points = np.array([evaluate_bezier(curve.control_points, t) for t in t_values])
+        points = points.astype(np.int32)
+        
+        # Draw the curve as a series of small line segments
+        for i in range(len(points) - 1):
+            cv2.line(viz, 
+                    tuple(points[i]), 
+                    tuple(points[i + 1]), 
+                    color,           # Unique color for each curve
+                    2,               # Line thickness
+                    cv2.LINE_AA)     # Anti-aliasing for smooth appearance
+        
+        if show_control_points:
+            # Draw the four control points that define the curve
+            for pt in curve.control_points:
+                pt = pt.astype(int)
+                cv2.circle(viz, tuple(pt), 3, color, -1)
             
-            # Draw curve
-            for i in range(len(points) - 1):
+            # Draw the control polygon (lines connecting control points)
+            # This helps visualize how the control points influence the curve
+            pts = curve.control_points.astype(np.int32)
+            for i in range(len(pts) - 1):
                 cv2.line(viz, 
-                        tuple(points[i]), 
-                        tuple(points[i + 1]), 
-                        color, 2, 
+                        tuple(pts[i]), 
+                        tuple(pts[i + 1]), 
+                        color, 
+                        1,            # Thinner lines for the control polygon
                         cv2.LINE_AA)
-            
-            if show_control_points:
-                # Draw control points
-                for pt in hedge.bezier_curve.control_points:
-                    pt = pt.astype(int)
-                    cv2.circle(viz, tuple(pt), 3, color, -1)
-                
-                # Draw control polygon
-                pts = hedge.bezier_curve.control_points.astype(np.int32)
-                for i in range(len(pts) - 1):
-                    cv2.line(viz, 
-                            tuple(pts[i]), 
-                            tuple(pts[i + 1]), 
-                            color, 1, 
-                            cv2.LINE_AA)
-    
-    # Draw shared edges with a distinctive style
-    for hedge in hypergraph.hyperedges:
-        for edge in hedge.shared_edges:
-            for i in range(len(edge.pixels) - 1):
-                pt1 = edge.pixels[i]
-                pt2 = edge.pixels[i + 1]
-                # Draw shared edges with dashed white line
-                cv2.line(viz, pt1, pt2, (255, 255, 255), 3)
-                cv2.line(viz, pt1, pt2, (0, 0, 0), 1)
     
     return viz
-
-def draw_optimization_progress(image, hypergraph, iteration, energy):
-    """Create a visualization of the optimization progress"""
-    viz = draw_hypergraph(image, hypergraph)
     
-    # Add text with iteration and energy information
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(viz, f'Iteration: {iteration}', (10, 30), font, 1, (255,255,255), 2)
-    cv2.putText(viz, f'Energy: {energy:.2f}', (10, 70), font, 1, (255,255,255), 2)
-    
-    return viz
-
 def process_image(image_path: str, output_dir: str = None, debug: bool = False):
-    """Process a single image to extract skeleton, build graph and optimize hypergraph."""
+    """Process a single image to extract skeleton, build graph and fit curves."""
     # Read and preprocess image
     image = cv2.imread(image_path)
     if image is None:
@@ -156,38 +180,19 @@ def process_image(image_path: str, output_dir: str = None, debug: bool = False):
     nodes, edges = build_topological_graph(skeleton)
     print(f"Found {len(nodes)} nodes and {len(edges)} edges")
     
-    # Create and optimize hypergraph
-    print("Building and optimizing hypergraph...")
-    hypergraph = Hypergraph(nodes, edges)
-    
-    # Setup progress tracking
-    if debug:
-        frame_count = 0
-        def optimization_callback(current_graph, temperature):
-            nonlocal frame_count
-            if frame_count % 10 == 0:  # Only show every 10th frame
-                viz = draw_optimization_progress(skeleton, current_graph, 
-                                              frame_count, current_graph.calculate_energy())
-                cv2.imshow('Optimization Progress', viz)
-                cv2.waitKey(1)
-            frame_count += 1
-    else:
-        optimization_callback = None
-    
-    # Run optimization
-    hypergraph.optimize(callback=optimization_callback)
-    print(f"Generated {len(hypergraph.hyperedges)} hyperedges")
-    
-    if debug and optimization_callback:
-        cv2.destroyWindow('Optimization Progress')
+    # Fit Bézier curves
+    print("Fitting Bézier curves...")
+    bezier_curves = fit_bezier_curves(edges)
+    print(f"Generated {len(bezier_curves)} Bézier curves")
     
     # Draw visualizations
-    topo_viz = draw_topological_graph(skeleton, nodes, edges)
-    hyper_viz = draw_hypergraph(skeleton, hypergraph)
+    topo_viz = draw_topological_graph(skeleton, nodes, edges, straight_lines=False)
+    straight_viz = draw_topological_graph(skeleton, nodes, edges, straight_lines=True)
+    bezier_viz = draw_bezier_curves(skeleton, bezier_curves)
 
-    # Create visualization with four panels
+    # Create visualization with five panels
     spacing = 10
-    viz_width = image.shape[1] * 4 + spacing * 3
+    viz_width = image.shape[1] * 5 + spacing * 4
     viz = np.zeros((image.shape[0], viz_width, 3), dtype=np.uint8)
 
     # Convert grayscale to BGR for visualization
@@ -198,14 +203,16 @@ def process_image(image_path: str, output_dir: str = None, debug: bool = False):
     viz[:, :image.shape[1]] = image
     viz[:, image.shape[1] + spacing:2*image.shape[1] + spacing] = cv2.cvtColor(skeleton, cv2.COLOR_GRAY2BGR)
     viz[:, 2*image.shape[1] + 2*spacing:3*image.shape[1] + 2*spacing] = topo_viz
-    viz[:, 3*image.shape[1] + 3*spacing:] = hyper_viz
+    viz[:, 3*image.shape[1] + 3*spacing:4*image.shape[1] + 3*spacing] = straight_viz
+    viz[:, 4*image.shape[1] + 4*spacing:] = bezier_viz
 
     # Add labels
     font = cv2.FONT_HERSHEY_SIMPLEX
     cv2.putText(viz, 'Input', (10, 30), font, 1, (255,255,255), 2)
     cv2.putText(viz, 'Skeleton', (image.shape[1] + spacing + 10, 30), font, 1, (255,255,255), 2)
     cv2.putText(viz, 'Graph', (2*image.shape[1] + 2*spacing + 10, 30), font, 1, (255,255,255), 2)
-    cv2.putText(viz, 'Hypergraph', (3*image.shape[1] + 3*spacing + 10, 30), font, 1, (255,255,255), 2)
+    cv2.putText(viz, 'Straight', (3*image.shape[1] + 3*spacing + 10, 30), font, 1, (255,255,255), 2)
+    cv2.putText(viz, 'Bezier', (4*image.shape[1] + 4*spacing + 10, 30), font, 1, (255,255,255), 2)
 
     if debug:
         cv2.imshow('Vectorization Pipeline', viz)
@@ -220,33 +227,28 @@ def process_image(image_path: str, output_dir: str = None, debug: bool = False):
         base_name = Path(image_path).stem
         cv2.imwrite(str(Path(output_dir) / f"{base_name}_skeleton.png"), skeleton)
         cv2.imwrite(str(Path(output_dir) / f"{base_name}_graph.png"), topo_viz)
-        cv2.imwrite(str(Path(output_dir) / f"{base_name}_hyper.png"), hyper_viz)
+        cv2.imwrite(str(Path(output_dir) / f"{base_name}_bezier.png"), bezier_viz)
         cv2.imwrite(str(Path(output_dir) / f"{base_name}_comparison.png"), viz)
 
-        # Save hypergraph data
-        with open(str(Path(output_dir) / f"{base_name}_hypergraph.txt"), 'w') as f:
-            f.write(f"Number of hyperedges: {len(hypergraph.hyperedges)}\n\n")
-            for i, hedge in enumerate(hypergraph.hyperedges):
-                f.write(f"Hyperedge {i + 1}:\n")
-                f.write(f"  Number of edges: {len(hedge.edges)}\n")
-                f.write(f"  Number of shared edges: {len(hedge.shared_edges)}\n")
-                if hedge.bezier_curve:
-                    f.write(f"  Curve degree: {hedge.bezier_curve.degree}\n")
-                    f.write(f"  Fitting error: {hedge.bezier_curve.error:.2f}\n")
-                    f.write("  Control points:\n")
-                    for j, pt in enumerate(hedge.bezier_curve.control_points):
-                        f.write(f"    P{j}: ({pt[0]:.2f}, {pt[1]:.2f})\n")
+        # Save curve data
+        with open(str(Path(output_dir) / f"{base_name}_curves.txt"), 'w') as f:
+            f.write(f"Number of curves: {len(bezier_curves)}\n\n")
+            for i, curve in enumerate(bezier_curves):
+                f.write(f"Curve {i + 1}:\n")
+                f.write("  Control points:\n")
+                for j, pt in enumerate(curve.control_points):
+                    f.write(f"    P{j}: ({pt[0]:.2f}, {pt[1]:.2f})\n")
+                f.write(f"  Start node: ({curve.start_node.x}, {curve.start_node.y}) - {curve.start_node.type}\n")
+                f.write(f"  End node: ({curve.end_node.x}, {curve.end_node.y}) - {curve.end_node.type}\n")
                 f.write("\n")
 
         print(f"Results saved in {output_dir}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Extract and vectorize sketches using hypergraph optimization')
+    parser = argparse.ArgumentParser(description='Extract and vectorize sketches')
     parser.add_argument('input', help='Input image path or directory')
     parser.add_argument('--output', '-o', help='Output directory', default='output')
     parser.add_argument('--debug', '-d', action='store_true', help='Show debug visualization')
-    parser.add_argument('--lambda-param', type=float, default=0.6, 
-                       help='Balance between fidelity and simplicity (default: 0.6)')
     args = parser.parse_args()
     
     input_path = Path(args.input)

@@ -1,57 +1,91 @@
-from dataclasses import dataclass
 import numpy as np
-from typing import List, Tuple, Optional
-from scipy.optimize import minimize
-from scipy.interpolate import splprep, splev
+from dataclasses import dataclass
+from typing import List
+from topological_graph import Node, Edge
 
 @dataclass
 class BezierCurve:
-    control_points: np.ndarray
-    degree: int
-    error: float
+    """Represents a cubic Bézier curve with its control points and associated nodes"""
+    control_points: np.ndarray  # Shape: (4, 2) for cubic Bézier
+    start_node: Node
+    end_node: Node
 
-def fit_bezier_curve(pixels: List[Tuple[int, int]], degree: int) -> BezierCurve:
-    """Simplified and faster curve fitting using B-spline interpolation"""
-    if len(pixels) < 2:
-        raise ValueError("Need at least 2 pixels to fit a curve")
+def fit_cubic_bezier(points: np.ndarray) -> np.ndarray:
+    """Fit a cubic Bézier curve to a sequence of points.
     
-    if len(pixels) < degree + 1:
-        degree = len(pixels) - 1
+    This function fits a cubic Bézier curve using chord-length parameterization
+    and least squares fitting. The first and last control points are fixed at
+    the endpoints of the curve.
     
-    try:
-        # Convert pixels to numpy array
-        points = np.array(pixels)
+    Args:
+        points: Array of points to fit (shape: [n, 2])
         
-        # For straight lines, just use endpoints
-        if degree == 1:
-            control_points = np.array([points[0], points[-1]])
-            error = np.mean(np.sum((points - control_points[0])**2, axis=1))
-            return BezierCurve(control_points=control_points, degree=1, error=error)
+    Returns:
+        Array of control points (shape: [4, 2])
+    """
+    # We need at least 2 points to fit a curve
+    if len(points) < 2:
+        return np.vstack([points[0], points[0], points[-1], points[-1]])
+    
+    # Calculate chord lengths for parameterization
+    chord_lengths = np.sqrt(np.sum(np.diff(points, axis=0) ** 2, axis=1))
+    t_values = np.zeros(len(points))
+    t_values[1:] = np.cumsum(chord_lengths)
+    t_values /= t_values[-1]  # Normalize to [0, 1]
+    
+    # Build the cubic Bézier basis matrix
+    basis_matrix = np.zeros((len(points), 4))
+    for i, t in enumerate(t_values):
+        basis_matrix[i] = [
+            (1-t)**3,           # Basis function for P0
+            3*t*(1-t)**2,       # Basis function for P1
+            3*t**2*(1-t),       # Basis function for P2
+            t**3                # Basis function for P3
+        ]
+    
+    # First and last control points are the endpoints
+    P0 = points[0]
+    P3 = points[-1]
+    
+    # Solve for the middle control points
+    A = basis_matrix[:, 1:3]
+    b = points - np.outer(basis_matrix[:, 0], P0) - np.outer(basis_matrix[:, 3], P3)
+    
+    # Solve least squares problem for middle control points
+    P1P2, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+    
+    # Combine all control points
+    control_points = np.vstack([P0, P1P2[0], P1P2[1], P3])
+    
+    return control_points
+
+def fit_bezier_curves(edges: List[Edge]) -> List[BezierCurve]:
+    """Fit cubic Bézier curves to the edges of the topological graph.
+    
+    This function creates a cubic Bézier curve for each edge in the graph,
+    preserving the topological connections between nodes.
+    
+    Args:
+        edges: List of Edge objects from the topological graph
         
-        # For higher degrees, use spline interpolation
-        x = points[:, 0]
-        y = points[:, 1]
+    Returns:
+        List of fitted BezierCurve objects
+    """
+    bezier_curves = []
+    
+    for edge in edges:
+        # Convert pixel coordinates to numpy array
+        points = np.array(edge.pixels)
         
-        # Fit a B-spline
-        t = np.linspace(0, 1, len(x))
-        tck, _ = splprep([x, y], k=degree, s=0)
+        # Fit a cubic Bézier curve to the points
+        control_points = fit_cubic_bezier(points)
         
-        # Sample control points
-        num_control_points = degree + 1
-        u = np.linspace(0, 1, num_control_points)
-        control_points = np.column_stack(splev(u, tck))
-        
-        # Calculate error
-        curve_points = np.column_stack(splev(t, tck))
-        error = np.mean(np.sum((points - curve_points)**2, axis=1))
-        
-        return BezierCurve(
+        # Create BezierCurve object
+        curve = BezierCurve(
             control_points=control_points,
-            degree=degree,
-            error=error
+            start_node=edge.start_node,
+            end_node=edge.end_node
         )
-        
-    except Exception as e:
-        # Fallback to linear fit
-        control_points = np.array([points[0], points[-1]])
-        return BezierCurve(control_points=control_points, degree=1, error=float('inf'))
+        bezier_curves.append(curve)
+    
+    return bezier_curves

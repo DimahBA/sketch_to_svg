@@ -27,7 +27,7 @@ class Hyperedge:
 
 class Hypergraph:
     """Implementation of the paper's hypergraph representation and optimization"""
-    def __init__(self, nodes: List[Node], edges: List[Edge], lambda_param=0.9, mu=0.7):
+    def __init__(self, nodes: List[Node], edges: List[Edge], lambda_param=0.3, mu=0.7):
         self.nodes = nodes
         self.original_edges = edges
         self.lambda_param = lambda_param  # Controls fidelity vs simplicity
@@ -66,7 +66,7 @@ class Hypergraph:
         return (1 - self.lambda_param) * fidelity + self.lambda_param * simplicity
         
     
-    def optimize(self, T_init=1.0, T_end=1e-4, callback=None, max_iter=3000):
+    def optimize(self, T_init=1.0, T_end=1e-4, callback=None, max_iter=0):
         """Optimized Metropolis-Hastings optimization loop"""
         T = T_init
         C = np.power(0.999, 1.0/len(self.nodes))
