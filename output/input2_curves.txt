@@ -1,0 +1,92 @@
+Number of curves: 10
+
+Curve 1:
+  Control points:
+    P0: (83.00, 1.00)
+    P1: (81.83, 7.42)
+    P2: (77.38, 23.58)
+    P3: (76.00, 35.00)
+  Start node: (83, 1) - junction
+  End node: (76, 35) - junction
+
+Curve 2:
+  Control points:
+    P0: (161.00, 1.00)
+    P1: (158.44, 7.82)
+    P2: (166.80, 25.48)
+    P3: (161.00, 36.00)
+  Start node: (161, 1) - junction
+  End node: (161, 36) - junction
+
+Curve 3:
+  Control points:
+    P0: (161.00, 36.00)
+    P1: (181.42, 44.49)
+    P2: (216.31, 35.51)
+    P3: (242.00, 40.00)
+  Start node: (161, 36) - junction
+  End node: (242, 40) - junction
+
+Curve 4:
+  Control points:
+    P0: (161.00, 36.00)
+    P1: (136.49, 41.43)
+    P2: (103.35, 35.76)
+    P3: (76.00, 35.00)
+  Start node: (161, 36) - junction
+  End node: (76, 35) - junction
+
+Curve 5:
+  Control points:
+    P0: (76.00, 35.00)
+    P1: (76.10, 36.70)
+    P2: (61.07, 35.78)
+    P3: (55.00, 36.00)
+  Start node: (76, 35) - junction
+  End node: (55, 36) - endpoint
+
+Curve 6:
+  Control points:
+    P0: (76.00, 35.00)
+    P1: (79.07, 65.95)
+    P2: (73.10, 104.43)
+    P3: (85.00, 132.00)
+  Start node: (76, 35) - junction
+  End node: (85, 132) - junction
+
+Curve 7:
+  Control points:
+    P0: (85.00, 132.00)
+    P1: (106.86, 143.42)
+    P2: (137.41, 131.63)
+    P3: (161.00, 134.00)
+  Start node: (85, 132) - junction
+  End node: (161, 134) - junction
+
+Curve 8:
+  Control points:
+    P0: (161.00, 134.00)
+    P1: (171.80, 134.96)
+    P2: (183.94, 135.25)
+    P3: (196.00, 136.00)
+  Start node: (161, 134) - junction
+  End node: (196, 136) - junction
+
+Curve 9:
+  Control points:
+    P0: (161.00, 134.00)
+    P1: (160.26, 147.62)
+    P2: (157.98, 169.75)
+    P3: (161.00, 185.00)
+  Start node: (161, 134) - junction
+  End node: (161, 185) - endpoint
+
+Curve 10:
+  Control points:
+    P0: (196.00, 136.00)
+    P1: (207.18, 136.96)
+    P2: (227.32, 140.55)
+    P3: (242.00, 138.00)
+  Start node: (196, 136) - junction
+  End node: (242, 138) - junction
+

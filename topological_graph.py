@@ -153,38 +153,33 @@ def trace_skeleton_paths(skeleton: np.ndarray, nodes: List[Node]) -> List[Edge]:
                     neighbors.append((nx, ny))
         return neighbors
 
-    def find_nearby_nodes(x: int, y: int, start_node: Node) -> Optional[Tuple[Node, List[Tuple[int, int]]]]:
+    def find_nearest_node(x: int, y: int, start_node: Node) -> Optional[Tuple[Node, List[Tuple[int, int]]]]:
         queue = [(x, y, [(x, y)])]  # (x, y, path to get from start point to end) 
         local_visited = visited.copy() 
         local_visited[y, x] = True #start point is marked as visited
-
-        nearby = []
-
+        
         while queue:
             cx, cy, path = queue.pop(0)
             # Check for nearby nodes
             for node in nodes:
                 if node != start_node and abs(node.x - cx) <= 3 and abs(node.y - cy) <= 3:
-                    #return node, path + [(node.x, node.y)] #return that node and the path to it
-                    nearby.append((node, path + [(node.x, node.y)]))
-                    continue
-
+                    return node, path + [(node.x, node.y)] #return that node and the path to it
+                    
             # Add unvisited neighbors to queue
             for nx, ny in get_neighbors(cx, cy):
                 if not local_visited[ny, nx]:
                     local_visited[ny, nx] = True
                     queue.append((nx, ny, path + [(nx, ny)]))
-
-        return nearby
+        return None
 
     # Process each node
     for start_node in nodes:
         # Find paths from each neighbor of the start node
         for next_x, next_y in get_neighbors(start_node.x, start_node.y):
             if not visited[next_y, next_x]:
-                nearby_nodes = find_nearby_nodes(next_x, next_y, start_node)
-                for node in nearby_nodes:
-                    end_node, path = node
+                result = find_nearest_node(next_x, next_y, start_node)
+                if result:
+                    end_node, path = result
                     edges.append(Edge(
                         start_node=start_node,
                         end_node=end_node,
