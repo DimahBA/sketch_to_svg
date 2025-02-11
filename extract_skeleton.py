@@ -150,10 +150,58 @@ def extract_skeleton(image: np.ndarray):
     merged = merge_and_thin_lines(cleaned, dilation_size=3)
     
     # Final cleaning of any remaining small artifacts
-    final_cleaned = clean_small_components(merged, min_size=10)
-    
+    #final_cleaned = clean_small_components(merged, min_size=10)
+
+    h, w = merged.shape
+    for y in range(1, h-1):
+        for x in range(1, w-1):
+            if merged[y, x] == 0:
+                continue
+
+            
+
+
+            north = merged[y+1, x  ]
+            south = merged[y-1, x  ]
+            east  = merged[y  , x-1]
+            west  = merged[y  , x+1]
+
+            diag_ne = merged[y+1, x-1]
+            diag_nw = merged[y+1, x+1]
+            diag_se = merged[y-1, x-1]
+            diag_sw = merged[y-1, x+1]
+
+            # check for L's, like
+            #
+            #  .X.
+            #  .XX
+            #  ...
+            #
+            # (northwest L)
+
+            north_east = (north and east) and (not ( south or west ))
+            north_west = (north and west) and (not ( south or east ))
+            south_east = (south and east) and (not ( north or west ))
+            south_west = (south and west) and (not ( north or east ))
+            
+            if north_east and diag_sw:
+                continue
+            if north_west and diag_se:
+                continue
+            if south_east and diag_nw:
+                continue
+            if south_west and diag_ne:
+                continue
+
+
+            if north_east or north_west or south_east or south_west:
+                merged[y, x] = 0
+
+    #cv2.imshow('merged', merged)
+    #cv2.waitKey(0)
+
     # Invert the final output - black lines on white background
-    result = cv2.bitwise_not(final_cleaned)
+    result = cv2.bitwise_not(merged)
     
     return result
 

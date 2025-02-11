@@ -69,7 +69,8 @@ def draw_topological_graph(skeleton, nodes, edges, straight_lines=False):
         color = {
             'junction': (0, 0, 255),    # Red
             'endpoint': (0, 255, 0),    # Green
-            'turn': (0, 255, 255)       # Yellow
+            'turn': (0, 255, 255),      # Yellow
+            'DEBUG': (255, 0, 0)         # special debug node
         }.get(node.type, (255, 255, 255))
         
         # Draw node with larger radius for visibility
