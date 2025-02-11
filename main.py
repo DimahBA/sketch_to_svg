@@ -161,7 +161,7 @@ def draw_bezier_curves(image, curves, show_control_points=False):
     
     return viz
     
-def process_image(image_path: str, output_dir: str = None, debug: bool = False):
+def process_image(image_path: str, output_dir: str = None, image_is_skeleton: bool = False, debug: bool = False):
     """Process a single image to extract skeleton, build graph and fit curves."""
     # Read and preprocess image
     image = cv2.imread(image_path)
@@ -174,7 +174,11 @@ def process_image(image_path: str, output_dir: str = None, debug: bool = False):
         gray = image
 
     print(f"Processing {image_path}...")
-    skeleton = extract_skeleton(gray)
+    if image_is_skeleton:
+        skeleton = gray
+    else:
+        skeleton = extract_skeleton(gray)
+
     
     # Build topological graph
     nodes, edges = build_topological_graph(skeleton)
@@ -247,19 +251,20 @@ def process_image(image_path: str, output_dir: str = None, debug: bool = False):
 def main():
     parser = argparse.ArgumentParser(description='Extract and vectorize sketches')
     parser.add_argument('input', help='Input image path or directory')
+    parser.add_argument('--from-skeleton', '-s', help='If passed, input image is treated as the skeleton', action="store_true", default=True)
     parser.add_argument('--output', '-o', help='Output directory', default='output')
     parser.add_argument('--debug', '-d', action='store_true', help='Show debug visualization')
     args = parser.parse_args()
     
     input_path = Path(args.input)
     if input_path.is_file():
-        process_image(str(input_path), args.output, args.debug)
+        process_image(str(input_path), args.output, args.from_skeleton, args.debug)
     elif input_path.is_dir():
         image_extensions = ['.png', '.jpg', '.jpeg', '.bmp']
         for img_path in input_path.iterdir():
             if img_path.suffix.lower() in image_extensions:
                 try:
-                    process_image(str(img_path), args.output, args.debug)
+                    process_image(str(img_path), args.output, args.from_skeleton, args.debug)
                 except Exception as e:
                     print(f"Error processing {img_path}: {str(e)}")
     else:
