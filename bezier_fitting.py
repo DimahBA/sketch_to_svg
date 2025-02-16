@@ -5,10 +5,14 @@ from topological_graph import Node, Edge
 
 @dataclass
 class BezierCurve:
-    """Represents a cubic Bézier curve with its control points and associated nodes"""
-    control_points: np.ndarray  # Shape: (4, 2) for cubic Bézier
+    """Represents a Bézier curve with its control points and associated nodes"""
+    control_points: np.ndarray  # Shape: (2, 2) for linear or (4, 2) for cubic Bézier
     start_node: Node
     end_node: Node
+
+def curve_length(points: np.ndarray) -> float:
+    """Calculate the approximate length of a curve from its points"""
+    return np.sum(np.sqrt(np.sum(np.diff(points, axis=0) ** 2, axis=1)))
 
 def fit_cubic_bezier(points: np.ndarray) -> np.ndarray:
     """Fit a cubic Bézier curve to a sequence of points.
@@ -59,14 +63,17 @@ def fit_cubic_bezier(points: np.ndarray) -> np.ndarray:
     
     return control_points
 
-def fit_bezier_curves(edges: List[Edge]) -> List[BezierCurve]:
-    """Fit cubic Bézier curves to the edges of the topological graph.
+def fit_bezier_curves(edges: List[Edge], min_curve_length: float = 10.0) -> List[BezierCurve]:
+    """Fit Bézier curves to the edges of the topological graph.
     
-    This function creates a cubic Bézier curve for each edge in the graph,
-    preserving the topological connections between nodes.
+    This function creates a Bézier curve for each edge in the graph,
+    preserving the topological connections between nodes. For short edges,
+    it creates linear Bézier curves (straight lines) instead of cubic curves.
     
     Args:
         edges: List of Edge objects from the topological graph
+        min_curve_length: Minimum length threshold for cubic curves. Shorter curves
+                         will be rendered as straight lines.
         
     Returns:
         List of fitted BezierCurve objects
@@ -77,8 +84,15 @@ def fit_bezier_curves(edges: List[Edge]) -> List[BezierCurve]:
         # Convert pixel coordinates to numpy array
         points = np.array(edge.pixels)
         
-        # Fit a cubic Bézier curve to the points
-        control_points = fit_cubic_bezier(points)
+        # Calculate curve length
+        length = curve_length(points)
+        
+        if length < min_curve_length:
+            # For short curves, just use start and end points (linear Bézier)
+            control_points = np.vstack([points[0], points[-1]])
+        else:
+            # For longer curves, fit a cubic Bézier
+            control_points = fit_cubic_bezier(points)
         
         # Create BezierCurve object
         curve = BezierCurve(

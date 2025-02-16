@@ -5,6 +5,7 @@ from pathlib import Path
 from extract_skeleton import extract_skeleton
 from topological_graph import build_topological_graph, Node, Edge
 from bezier_fitting import fit_bezier_curves
+from generate_svg import generate_svg, save_svg
 
 def generate_distinct_colors(n):
     """Generate n visually distinct colors using HSV color space."""
@@ -78,6 +79,7 @@ def draw_topological_graph(skeleton, nodes, edges, straight_lines=False):
         cv2.circle(viz, (node.x, node.y), 5, color, 1)
     
     return viz
+
 
 
 def evaluate_bezier(control_points: np.ndarray, t: float) -> np.ndarray:
@@ -176,6 +178,7 @@ def process_image(image_path: str, output_dir: str = None, image_is_skeleton: bo
 
     print(f"Processing {image_path}...")
     if image_is_skeleton:
+        print("Skipping skeleton extraction since we already have a skeleton")
         skeleton = gray
     else:
         skeleton = extract_skeleton(gray)
@@ -212,12 +215,12 @@ def process_image(image_path: str, output_dir: str = None, image_is_skeleton: bo
     viz[:, 4*image.shape[1] + 4*spacing:] = bezier_viz
 
     # Add labels
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(viz, 'Input', (10, 30), font, 1, (255,255,255), 2)
-    cv2.putText(viz, 'Skeleton', (image.shape[1] + spacing + 10, 30), font, 1, (255,255,255), 2)
-    cv2.putText(viz, 'Graph', (2*image.shape[1] + 2*spacing + 10, 30), font, 1, (255,255,255), 2)
-    cv2.putText(viz, 'Straight', (3*image.shape[1] + 3*spacing + 10, 30), font, 1, (255,255,255), 2)
-    cv2.putText(viz, 'Bezier', (4*image.shape[1] + 4*spacing + 10, 30), font, 1, (255,255,255), 2)
+    #font = cv2.FONT_HERSHEY_SIMPLEX
+    #cv2.putText(viz, 'Input', (10, 30), font, 1, (255,255,255), 2)
+    #cv2.putText(viz, 'Skeleton', (image.shape[1] + spacing + 10, 30), font, 1, (255,255,255), 2)
+    #cv2.putText(viz, 'Graph', (2*image.shape[1] + 2*spacing + 10, 30), font, 1, (255,255,255), 2)
+    #cv2.putText(viz, 'Straight', (3*image.shape[1] + 3*spacing + 10, 30), font, 1, (255,255,255), 2)
+    #cv2.putText(viz, 'Bezier', (4*image.shape[1] + 4*spacing + 10, 30), font, 1, (255,255,255), 2)
 
     if debug:
         cv2.imshow('Vectorization Pipeline', viz)
@@ -246,13 +249,18 @@ def process_image(image_path: str, output_dir: str = None, image_is_skeleton: bo
                 f.write(f"  Start node: ({curve.start_node.x}, {curve.start_node.y}) - {curve.start_node.type}\n")
                 f.write(f"  End node: ({curve.end_node.x}, {curve.end_node.y}) - {curve.end_node.type}\n")
                 f.write("\n")
+        # Save SVG
+        base_name = Path(image_path).stem
+        svg_path = str(Path(output_dir) / f"{base_name}.svg")
+        save_svg(bezier_curves, image.shape[1], image.shape[0], svg_path)
+        print(f"SVG saved to {svg_path}")
 
         print(f"Results saved in {output_dir}")
 
 def main():
     parser = argparse.ArgumentParser(description='Extract and vectorize sketches')
     parser.add_argument('input', help='Input image path or directory')
-    parser.add_argument('--from-skeleton', '-s', help='If passed, input image is treated as the skeleton', action="store_true", default=True)
+    parser.add_argument('--from-skeleton', '-s', help='If passed, input image is treated as the skeleton', action="store_true", default=False)
     parser.add_argument('--output', '-o', help='Output directory', default='output')
     parser.add_argument('--debug', '-d', action='store_true', help='Show debug visualization')
     args = parser.parse_args()

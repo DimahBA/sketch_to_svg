@@ -15,16 +15,39 @@ def clean_small_components(image, min_size=10):
     return cleaned
 
 def preprocess_image(image):
-    """Apply preprocessing to reduce noise and enhance lines."""
+    """Apply preprocessing to reduce noise and enhance lines using Sobel edge detection."""
+    # Normalize the image
     normalized = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX)
+    
+    # Apply bilateral filter to reduce noise while preserving edges
     smoothed = cv2.bilateralFilter(normalized, d=5, sigmaColor=50, sigmaSpace=50)
+    
+    # Apply Sobel operators in both x and y directions
+    sobelx = cv2.Sobel(smoothed, cv2.CV_64F, 1, 0, ksize=3)
+    sobely = cv2.Sobel(smoothed, cv2.CV_64F, 0, 1, ksize=3)
+    
+    # Compute the magnitude of gradients
+    magnitude = cv2.magnitude(sobelx, sobely)
+    
+    # Normalize magnitude to 0-255 range
+    magnitude = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX).astype('uint8')
+    
+    # Enhance contrast using CLAHE
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    enhanced = clahe.apply(smoothed)
-    binary = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                 cv2.THRESH_BINARY, 7, 2)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2,2))
+    enhanced = clahe.apply(magnitude)
+    
+    # Apply threshold to get binary image
+    # Using a lower threshold value since Sobel already highlights edges
+    _, binary = cv2.threshold(enhanced, 30, 255, cv2.THRESH_BINARY)
+    
+    # Clean up noise and connect nearby lines
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4,4))
     cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    return cleaned
+    
+    # Invert the image to get black lines on white background
+    inverted = cv2.bitwise_not(cleaned)
+
+    return inverted
 
 def zhang_suen_thinning(image):
     """Zhang-Suen thinning algorithm implementation."""
@@ -113,15 +136,18 @@ def extract_skeleton(image: np.ndarray):
     else:
         gray = image.copy()
     
+    print("ES: preprocess_image")
     # Preprocess image
     preprocessed = preprocess_image(gray)
     
+    print("ES: trapped_ball_segmentation")
     # Extract regions
     regions = trapped_ball_segmentation(preprocessed, ball_radius=2)
     
     # Initialize skeleton
     skeleton = np.zeros_like(preprocessed)
     
+    print("ES: region boundaries")
     # Extract boundaries between regions
     for label in range(1, regions.max() + 1):
         region = (regions == label).astype(np.uint8) * 255
@@ -129,6 +155,7 @@ def extract_skeleton(image: np.ndarray):
         boundary = cv2.subtract(dilated, region)
         skeleton = cv2.bitwise_or(skeleton, boundary)
     
+    print("ES: open curves handling")
     # Handle open curves
     binary_inv = cv2.bitwise_not(preprocessed)
     # Only process areas far from existing boundaries
@@ -137,21 +164,25 @@ def extract_skeleton(image: np.ndarray):
     far_pixels = (distance > 2).astype(np.uint8) * 255
     far_pixels = cv2.bitwise_and(far_pixels, binary_inv)
     
+    print("ES: zhang_suen_thinning")
     # Thin the remaining pixels
     thinned = zhang_suen_thinning(far_pixels)
     
     # Combine boundaries with thinned open curves
     combined = cv2.bitwise_or(skeleton, thinned)
     
+    print("ES: clean_small_components")
     # Clean small components
     cleaned = clean_small_components(combined, min_size=5)
     
+    print("ES: merge_and_thin_lines")
     # Merge nearby parallel lines and thin back to single pixel width
     merged = merge_and_thin_lines(cleaned, dilation_size=3)
     
     # Final cleaning of any remaining small artifacts
     #final_cleaned = clean_small_components(merged, min_size=10)
 
+    print("ES: dedupe nearby pixels")
     h, w = merged.shape
     for y in range(1, h-1):
         for x in range(1, w-1):

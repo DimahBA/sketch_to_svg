@@ -2,7 +2,11 @@ import numpy as np
 import cv2
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Set
+
 import math
+import time
+import uuid
+import random
 
 @dataclass(frozen=True)
 class Node:
@@ -45,7 +49,7 @@ def build_topological_graph(skeleton: np.ndarray):
         skeleton = cv2.bitwise_not(skeleton)
     
     # 1. Find junction points and endpoints
-    nodes = find_critical_points(skeleton)
+    nodes = find_critical_points(skeleton, 6)
     
     # 2. Extract edges by tracing paths between nodes
     edges = trace_skeleton_paths(skeleton, nodes)
@@ -77,52 +81,21 @@ def count_branch_transitions(patch: np.ndarray) -> int:
                      for i in range(8))
     return transitions
 
-def analyze_local_structure(skeleton: np.ndarray, y: int, x: int) -> Optional[str]:
-    """Analyze the local 3x3 region around a point to determine its type.
-    Returns 'endpoint', 'junction', 'turn', or None.
-    """
-    patch = skeleton[y-1:y+2, x-1:x+2].copy()
-    center_val = patch[1, 1]
-    patch[1, 1] = 0  # Don't count center pixel
-    
-    # Count total neighbors and transitions
-    neighbor_count = np.count_nonzero(patch)
-    transitions = count_branch_transitions(patch)
-    
-    if neighbor_count == 1:
-        return 'endpoint'
-    elif neighbor_count >= 3 and transitions >= 3:
-        return 'junction'
-        
-    # New: Detect sharp turns by analyzing local curvature
-    if neighbor_count == 2:  # Potential turn point
-        # Get indices of the two neighbors
-        ys, xs = np.where(patch > 0)
-        if len(ys) == 2:  # Verify we have exactly 2 neighbors
-            # Convert to relative coordinates
-            v1 = np.array([ys[0] - 1, xs[0] - 1])  # Vector to first neighbor
-            v2 = np.array([ys[1] - 1, xs[1] - 1])  # Vector to second neighbor
-            
-            # Calculate angle between vectors
-            cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-            angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
-            angle_degrees = np.degrees(angle)
-            
-            # If angle is less than 135 degrees, consider it a sharp turn
-            if angle_degrees < 135:
-                return 'turn'
-    
-    return None
-
 def merge_nearby_nodes(candidates: List[Tuple[int, int, str]], min_distance: float) -> List[Node]:
     """Merge nodes that are closer than min_distance to each other.
     Priority order: junctions > turns > endpoints
+    
+    Args:
+        candidates: List of tuples (x, y, node_type) representing node candidates
+        min_distance: Minimum Euclidean distance between nodes to trigger merging
+        
+    Returns:
+        List of merged Node objects
     """
     # Sort candidates by priority
     nodes = []
     priority = {'junction': 0, 'turn': 1, 'endpoint': 2, 'DEBUG': -1}
     candidates.sort(key=lambda x: priority[x[2]])
-
 
     while candidates:
         x, y, node_type = candidates.pop(0)
@@ -131,7 +104,6 @@ def merge_nearby_nodes(candidates: List[Tuple[int, int, str]], min_distance: flo
         if node_type == 'DEBUG':
             nodes.append(Node(x, y, 'DEBUG'))
             continue
-
         
         # Find all candidates within min_distance
         i = 0
@@ -154,9 +126,39 @@ def merge_nearby_nodes(candidates: List[Tuple[int, int, str]], min_distance: flo
             avg_x = int(round(sum(p[0] for p in all_points) / len(all_points)))
             avg_y = int(round(sum(p[1] for p in all_points) / len(all_points)))
             nodes.append(Node(avg_x, avg_y, 'junction'))
-        else:  # endpoint
-            # If there's a junction nearby, skip this endpoint
+            
+        elif node_type == 'turn':
+            # If there's a junction nearby, skip this turn point
             if any(nt == 'junction' for _, _, nt in nearby):
+                continue
+                
+            # Filter nearby points to only include turns
+            nearby_turns = [(nx, ny, nt) for nx, ny, nt in nearby if nt == 'turn']
+            
+            if not nearby_turns:
+                # If no other turn points nearby, keep this one
+                nodes.append(Node(x, y, 'turn'))
+                continue
+                
+            # Get all turn points including current one
+            all_turn_points = [(x, y)] + [(nx, ny) for nx, ny, _ in nearby_turns]
+            
+            # For each turn point, compute its angle using analyze_local_structure
+            # We need to look at the surrounding pixels to get the angle
+            # This requires access to the skeleton image, so we'll rely on the angles 
+            # being similar if the turns are close and pointing in similar directions
+            
+            # Choose the turn point that maximizes distance from existing nodes
+            # while being central to other nearby turns
+            best_point = max(all_turn_points, key=lambda p:
+                sum(euclidean_distance(p, (n.x, n.y)) for n in nodes) +
+                -sum(euclidean_distance(p, (op[0], op[1])) for op in all_turn_points) / len(all_turn_points)
+            )
+            nodes.append(Node(best_point[0], best_point[1], 'turn'))
+            
+        else:  # endpoint
+            # If there's a junction or turn nearby, skip this endpoint
+            if any(nt in ['junction', 'turn'] for _, _, nt in nearby):
                 continue
             # Otherwise, keep the most isolated endpoint
             all_points = [(x, y)] + [(nx, ny) for nx, ny, _ in nearby]
@@ -167,7 +169,7 @@ def merge_nearby_nodes(candidates: List[Tuple[int, int, str]], min_distance: flo
     
     return nodes
 
-def find_critical_points(skeleton: np.ndarray, min_distance: float = 6.0) -> List[Node]:
+def find_critical_points(skeleton: np.ndarray, min_distance: float = 12.0) -> List[Node]:
     """Find critical points (endpoints and junctions) in the skeleton,
     maintaining a minimum distance between nodes.
     
@@ -184,10 +186,12 @@ def find_critical_points(skeleton: np.ndarray, min_distance: float = 6.0) -> Lis
 
     visited = np.zeros_like(skeleton, dtype=bool)
 
-    min_node_distance = 15 #int(round(min_distance)) # pixels
-    allowed_angle_diff = 25 # degrees
+    # tested couples that seem to work (cannot explain why though):
+    # 120° and 2
+    # 25° and 12
 
-    #max_rotation_angle = 10  # degrees
+    allowed_angle_diff = 45 # degrees
+    rotation_inertia = 12
 
 
     def get_angle(p1, p2):
@@ -207,10 +211,16 @@ def find_critical_points(skeleton: np.ndarray, min_distance: float = 6.0) -> Lis
     def get_neighbors( x: int, y: int ):
         neighbors = []
 
+        #neighbor_angles_yx = {
+        #    -1: { -1: 225, 0: 270, 1: 315 },
+        #     0: { -1: 180,         1:   0 }, # 0,0 is not possible
+        #     1: { -1: 135, 0:  90, 1:  45 },
+        #}
+
         neighbor_angles_yx = {
             -1: { -1: 225, 0: 270, 1: 315 },
-             0: { -1: 180,         1:   0 }, # 0,0 is not possible
-             1: { -1: 135, 0:  90, 1:  45 },
+             0: { -1: 180,         1: 0 },   # 0,0 is not possible
+             1: { -1: 135, 0: 90,  1: 45 },
         }
 
         for dy in [-1, 0, 1]:
@@ -236,82 +246,107 @@ def find_critical_points(skeleton: np.ndarray, min_distance: float = 6.0) -> Lis
 
         return angle_diff
 
+    def signed_angle_difference(angle1, angle2):
+        """
+        Calculate the signed angle difference between two angles in degrees.
+        Positive means angle2 is counter-clockwise from angle1.
+        Negative means angle2 is clockwise from angle1.
+        Returns value in range [-180, 180]
+        """
+        # Normalize difference to [-180, 180]
+        #diff = (angle2 - angle1) % 360
+        #if diff > 180:
+        #    diff -= 360
+        #return diff
+        diff = angle2 - angle1
+        if diff > 180:
+            diff -= 360
+        if diff < -180:
+            diff += 360
+        return diff
+
+
     def get_closest_candidate_distance( from_x: int, from_y: int ):
         return min([
             math.sqrt( (x - from_x)**2 + (y - from_y)**2 ) for x, y, node_type in candidates
         ])
 
-    """     
+    def get_pixel_at_angle(x, y, angle_degrees, distance):
+        # Convert the angle from degrees to radians
+        angle_radians = math.radians(angle_degrees)
+        
+        # Calculate new coordinates
+        new_x = x + distance * math.cos(angle_radians)
+        new_y = y + distance * math.sin(angle_radians)
+        
+        # Return the new pixel coordinates
+        return round(new_x), round(new_y)
+
     def explore_skeleton( start_x: int, start_y: int ):
-        INITIAL_DEPTH = 1
-        #angle = None
-        #visited[start_x, start_y] = True
-        queue = [( start_y, start_x, start_x, start_y, INITIAL_DEPTH, None )]
+        arrows = {}
+        ARROW_LENGTH = 20
+
+        def random_color():
+            return (
+                random.randint(0, 255),
+                random.randint(0, 255),
+                random.randint(0, 255)
+            )
+
+        def get_arrow_target(x, y, angle):
+            return get_pixel_at_angle(x, y, angle, ARROW_LENGTH)
+
+
+        def draw_img():
+            img = skeleton.copy()
+            img = cv2.bitwise_not(img)
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+
+            # Draw nodes
+            for x, y, node_type in candidates:
+                # Different colors for different node types
+                color = {
+                    'junction': (0, 0, 255),    # Red
+                    'endpoint': (0, 255, 0),    # Green
+                    'turn': (0, 255, 255),      # Yellow
+                    'DEBUG': (255, 0, 0)         # special debug node
+                }.get(node_type, (255, 255, 255))
                 
-        while queue:
-            y, x, origin_y, origin_x, depth, edge_angle = queue.pop(0)
+                # Draw node with larger radius for visibility
+                cv2.circle(img, (x, y), 4, color, -1)
+                cv2.circle(img, (x, y), 5, color, 1)
 
-            if visited[y, x]:
-                continue
+            for arrow_id, arrow_data in arrows.items():
+                base = arrow_data['base']
+                angle = arrow_data['angle']
+                color = arrow_data['color']
+                head = get_arrow_target(base[0], base[1], angle)
 
-            visited[y, x] = True
-            neighbors = get_neighbors(x, y)
-
-            current_angle = get_angle( (x, y), (start_x, start_y) )
-            #current_angle = get_angle( (y, x), (start_y, start_x) )
-
-            reached_min_dist = depth > min_node_distance
-
+                cv2.arrowedLine(img, base, head, color, 4)
+                #cv2.circle(img, base, min_distance, (255, 0, 255), 2)
 
 
-            if len(neighbors) == 1:
-                candidates.append((x, y, 'endpoint'))
-                # iterate on neighbors, if e.g. starting point is an endpoint.
-                for nx, ny in neighbors:
-                    queue.append( (ny, nx, origin_y, origin_x, depth+1, None) )
-                continue
+            cv2.imshow("Cool animation demo window", img)
+            key = cv2.waitKey(1)
 
-            if not reached_min_dist:
-                for neighbor in neighbors:
-                    nx, ny = neighbor
-                    queue.append( (ny, nx, origin_y, origin_x, depth+1, None) )
-                continue
-            
-
-            next_angle = edge_angle
-            if next_angle is None:
-                next_angle = current_angle
-            
-
-            # if no edge angle, any angle is valid
-            angle_is_valid = ((edge_angle is None) or ( angle_difference(current_angle, edge_angle) < allowed_angle_diff ) )
-            
+            if key != -1:
+                print("AHH I'M DYING :sob:")
+                cv2.destroyAllWindows()
+                exit()
 
 
-            if len(neighbors) > 2:
-                candidates.append((x, y, 'junction'))
-                for neighbor in neighbors:
-                    nx, ny = neighbor
-                    queue.append( (ny, nx, y, x, INITIAL_DEPTH, None) )
-                continue
-
-            if not angle_is_valid:
-                candidates.append((x, y, 'turn'))
-                for neighbor in neighbors:
-                    nx, ny = neighbor
-                    # WARN: using current_angle might be causing issues with correctly detecting turns
-                    queue.append( (ny, nx, y, x, INITIAL_DEPTH, next_angle) )
-                continue
-
-
-            # angle is valid
-            for neighbor in neighbors:
-                nx, ny = neighbor
-                queue.append( (ny, nx, origin_y, origin_x, depth+1, next_angle) )
-    """
-
-    def explore_skeleton( start_x: int, start_y: int ):
         INITIAL_DEPTH = 1
+
+
+        narrow_id = uuid.uuid4()
+        narrow_color = random_color()
+        narrow_base = (start_x, start_y)
+        narrow_angle = 90
+
+        arrows[narrow_id] = {'base': narrow_base, 'angle': narrow_angle, 'color': narrow_color}
+
+
         #angle = None
         #visited[start_x, start_y] = True
         queue = [( 
@@ -320,12 +355,29 @@ def find_critical_points(skeleton: np.ndarray, min_distance: float = 6.0) -> Lis
             None, # reset current angle
             None,   # reset divergence angle
             None, None, # reset divergence start point
+            narrow_id # no arrow to start with
         )]
 
+        last_time = time.time_ns() // 1_000_000
+        
+        FPS = 30
+        MS_PER_FRAME = 1000 / FPS
+
+        draw_img()
+        cv2.waitKey(5000)
+
         while queue:
-            x, y, base_angle, curr_angle, diverge_start_angle, diverge_start_x, diverge_start_y = queue.pop(0)
+
+            curr_time = time.time_ns() // 1_000_000
+            #if curr_time - last_time <= MS_PER_FRAME:
+            #    time.sleep( curr_time - last_time )
+
+
+            x, y, base_angle, curr_angle, diverge_start_angle, diverge_start_x, diverge_start_y, arrow_id = queue.pop(0)
 
             if visited[y, x]:
+                if arrow_id:
+                    arrows.pop(arrow_id, None)
                 continue
             visited[y, x] = True
 
@@ -336,40 +388,70 @@ def find_critical_points(skeleton: np.ndarray, min_distance: float = 6.0) -> Lis
             # should not be possible
             if len(neighbors) == 0:
                 print(f"Found a lone pixel at ({x}, {y}), but it shouldn't be possible!")
+                arrows.pop(arrow_id, None)
                 candidates.append((x, y, 'endpoint'))
+                draw_img()
                 continue
 
             if len(neighbors) > 2:
                 candidates.append((x, y, 'junction'))
+                draw_img()
     
                 if diverge_start_x is not None:
                     candidates.append((diverge_start_x, diverge_start_y, 'turn'))
 
+                arrows.pop(arrow_id, None)
+
                 for nx, ny, nangle in neighbors:
+                    if visited[ny, nx]:
+                        continue
+
+                    narrow_id = uuid.uuid4()
+                    narrow_color = random_color()
+                    narrow_base = (nx, ny)
+                    narrow_angle = nangle % 360
+
+                    arrows[narrow_id] = {'base': narrow_base, 'angle': narrow_angle, 'color': narrow_color}
+
                     queue.append((
                         nx, ny, # next position
-                        nangle, # reset base angle to this neighbor's angle from the junction
-                        nangle, # reset current angle
+                        nangle % 360, # reset base angle to this neighbor's angle from the junction
+                        nangle % 360, # reset current angle
                         None,   # reset divergence angle
                         None, None, # reset divergence start point
+                        narrow_id # split a new arrow along each line
                     ))
                 continue
 
             if len(neighbors) == 1:
                 candidates.append((x, y, 'endpoint'))
+                draw_img()
                     
                 if diverge_start_x is not None:
                     candidates.append((diverge_start_x, diverge_start_y, 'turn'))
                     
+                arrows_made = 0
                 # iterate on neighbors, if e.g. starting point is an endpoint.
                 for nx, ny, nangle in neighbors:
+                    if visited[ny, nx]:
+                        continue
+
+                    if arrow_id:
+                        arrow = arrows[arrow_id]
+                        arrow['base'] = (nx, ny)
+                        arrow['angle'] = nangle % 360
+                        arrows_made += 1
+
                     queue.append((
                         nx, ny, # next position
-                        nangle, # reset base angle to this neighbor's angle from the endpoint
-                        nangle, # reset current angle
+                        nangle % 360, # reset base angle to this neighbor's angle from the endpoint
+                        nangle % 360, # reset current angle
                         None,   # reset divergence angle
                         None, None, # reset divergence start point
+                        arrow_id # keep same arrow_id
                     ))
+                if arrows_made == 0:
+                    arrows.pop(arrow_id, None)
                 continue
 
             # -----------------------------------------------------------------
@@ -378,37 +460,110 @@ def find_critical_points(skeleton: np.ndarray, min_distance: float = 6.0) -> Lis
 
             # first run!
             if base_angle is None:
+                # FIXME: try to put a turn here to fix that we might be starting on a turn and not detect it
+                candidates.append((x, y, 'turn'))
+
+                #arrows.pop(arrow_id, None)
+
+
                 for nx, ny, nangle in neighbors:
+                    if visited[ny, nx]:
+                        continue
+
+                    narrow_id = uuid.uuid4()
+                    narrow_color = random_color()
+                    narrow_base = (nx, ny)
+                    narrow_angle = nangle % 360
+
+                    arrows[narrow_id] = {'base': narrow_base, 'angle': narrow_angle, 'color': narrow_color}
+
+
                     queue.append((
                         nx, ny,      # next position
-                        nangle,  # base angle is the same
-                        nangle,  # current angle is the same
+                        nangle % 360,  # base angle is the same
+                        nangle % 360,  # current angle is the same
                         None,        # the starting divergence angle is None since we have no divergence yet
                         None, None,  # no divergence start point
+                        narrow_id
                     ))
                 continue
 
-            angle_diff = angle_difference(curr_angle, base_angle)
+            draw_img( )
+            
+
+            angle_diff = signed_angle_difference(base_angle, curr_angle)
+            #print(angle_diff)
+
+            DAMPENING_FACTOR = 0.1
+
+
+            next_base_angle = (base_angle + (angle_diff * DAMPENING_FACTOR)) % 360
+
+            #if abs(angle_diff) > allowed_angle_diff:
+            #    print(f"NYOOM at {x}, {y}")
+
+            #base_arrow = ( (x, y), get_pixel_at_angle(x, y, base_angle, 20) )
+            #angle_arrow = ( (x, y), get_pixel_at_angle(x, y, curr_angle, 20) )
+
+
 
             #max_angle_diff_reached = angle_diff > allowed_angle_diff
             
             # If we have diverged, i.e. the current angle is too far from our original angle
-            if angle_diff > allowed_angle_diff:
+            if abs(angle_diff) > allowed_angle_diff:
                 # failsafe: if no divergence start point was detected, use current point as
                 # divergence start point. This probably implies a very sharp turn ?
                 if (diverge_start_x is None) or (diverge_start_y is None):
                     diverge_start_x, diverge_start_y = x, y
 
-                if get_closest_candidate_distance( x, y ) > min_node_distance:
-                    candidates.append((diverge_start_x, diverge_start_y, 'turn'))
+                #if get_closest_candidate_distance( x, y ) > min_distance:
+                    #candidates.append((diverge_start_x, diverge_start_y, 'turn'))
+                    pass
 
+                distance_from_nearest_node = math.sqrt( (x - diverge_start_x)**2 + (y - diverge_start_y)**2 )
+
+                if distance_from_nearest_node > min_distance:
+                    #candidates.append((diverge_start_x, diverge_start_y, 'turn'))
+                    candidates.append((x, y, 'turn'))
+                #elif distance_from_nearest_node > 4:
+                #    candidates.append((x, y, 'DEBUG'))
+                else:
+                    pass #candidates.append((diverge_start_x, diverge_start_y, 'turn'))
+                
+
+                diverge_start_angle = diverge_start_angle or curr_angle
+
+                #arrows.pop(arrow_id, None)
+
+
+                nb_arrows_made = 0
                 for nx, ny, nangle in neighbors:
+                    if visited[ny, nx]:
+                        continue
+
+
+                    if nb_arrows_made == 0:
+                        narrow_id = arrow_id
+                        arrow = arrows[arrow_id]
+                        arrow['base'] = (nx, ny)
+                        arrow['angle'] = next_base_angle % 360
+                    else:
+                        narrow_id = uuid.uuid4()
+                        narrow_color = random_color()
+                        narrow_base = (nx, ny)
+                        narrow_angle = next_base_angle % 360
+
+                        arrows[narrow_id] = {'base': narrow_base, 'angle': narrow_angle, 'color': narrow_color}
+                    nb_arrows_made += 1
+
+
                     queue.append((
                         nx, ny,     # next position
-                        nangle,     # reset the base angle to the angle of the divergence start point
+                        next_base_angle,     # reset the base angle to the angle of the divergence start point
                         nangle,     # the next angle is the current base angle, since we're starting anew
                         None,       # the starting divergence angle is None since we have no divergence yet
                         None, None, # no divergence start point
+                        narrow_id
                     ))
                 continue
 
@@ -416,38 +571,57 @@ def find_critical_points(skeleton: np.ndarray, min_distance: float = 6.0) -> Lis
             # we did not diverge (yet ?)
             # -----------------------------------------------------------------
 
-            # Converging !
-            # FIXME: doesn't actually detect convergence
-            if angle_diff < allowed_angle_diff:
-                diverge_start_angle = None
-                diverge_start_x, diverge_start_y = None, None                
+            # Check for convergence - if we're getting closer to the base angle
+            if abs(signed_angle_difference(curr_angle, base_angle)) < 3:  # Small threshold for convergence
+                # Reset current angle to base angle since we're converging
+                curr_angle = base_angle
 
 
+            #arrows.pop(arrow_id, None)
 
+            nb_arrows_made = 0
             for nx, ny, nangle in neighbors:
-                rotation_from_base_to_target = angle_difference(nangle, base_angle) / 3
+                if visited[ny, nx]:
+                    continue
 
-                if rotation_from_base_to_target == 0:
-                    rotation_from_base_to_target = angle_difference(curr_angle, base_angle) / 3
+                if nb_arrows_made == 0:
+                    narrow_id = arrow_id
+                    arrow = arrows[arrow_id]
+                    arrow['base'] = (nx, ny)
+                    arrow['angle'] = next_base_angle
+                else:
+                    narrow_id = uuid.uuid4()
+                    narrow_color = random_color()
+                    narrow_base = (nx, ny)
+                    narrow_angle = next_base_angle
 
+                    arrows[narrow_id] = {'base': narrow_base, 'angle': narrow_angle, 'color': narrow_color}
+                nb_arrows_made += 1
 
                 n_diverge_start_angle = diverge_start_angle
                 n_diverge_start_x, n_diverge_start_y = diverge_start_x, diverge_start_y
-                if (nangle != base_angle) and (n_diverge_start_angle is None):
+
+                if (abs(signed_angle_difference(nangle, base_angle)) != 0) and (n_diverge_start_angle is None):
                     n_diverge_start_angle = nangle
                     n_diverge_start_x, n_diverge_start_y = nx, ny
 
-                if angle_difference(curr_angle, nangle) < rotation_from_base_to_target:
+                if n_diverge_start_angle is not None:
+                    n_diverge_start_angle %= 360
+
+                rotation_from_base_to_target = signed_angle_difference(nangle, base_angle) / rotation_inertia
+
+                if abs(signed_angle_difference(curr_angle, nangle)) < abs(rotation_from_base_to_target):
                     next_angle = nangle
                 else:
                     next_angle = curr_angle + rotation_from_base_to_target
 
                 queue.append((
                     nx, ny,      # next position
-                    base_angle,  # base angle is the same
-                    next_angle,  # current angle is the same
-                    n_diverge_start_angle,        # the starting divergence angle is None since we have no divergence yet
-                    n_diverge_start_x, n_diverge_start_y,  # no divergence start point
+                    next_base_angle,  
+                    nangle, 
+                    n_diverge_start_angle,
+                    n_diverge_start_x, n_diverge_start_y,
+                    narrow_id
                 ))
             continue
 
